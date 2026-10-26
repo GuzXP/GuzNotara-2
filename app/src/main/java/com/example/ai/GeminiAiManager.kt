@@ -3,6 +3,7 @@ package com.example.ai
 import android.content.Context
 import android.util.Log
 import com.example.data.model.TranscriptSegmentEntity
+import com.example.recording.AudioCleanupHelper
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.Content
@@ -56,28 +57,23 @@ class GeminiAiManager(private val context: Context) {
         var accumulatedTimeOffsetMs = 0L
 
         for ((index, file) in validAudioFiles.withIndex()) {
-            val isSimulatedFile = isSimulatedPreviewFile(file)
-            val chunkSegments = if (isSimulatedFile) {
-                // In headless container / preview environment where no physical mic hardware exists
-                Log.i(TAG, "Simulated audio track detected on chunk $index, generating contextual preview segments.")
-                generateSimulatedSegments(meetingId, meetingTitle, index, accumulatedTimeOffsetMs)
-            } else {
-                transcribeSingleAudioChunk(
-                    meetingId = meetingId,
-                    meetingTitle = meetingTitle,
-                    audioFile = file,
-                    chunkIndex = index,
-                    timeOffsetMs = accumulatedTimeOffsetMs
-                )
-            }
+            val chunkDuration = AudioCleanupHelper.getChunkDurationMs(context, meetingId, index, file)
+
+            val chunkSegments = transcribeSingleAudioChunk(
+                meetingId = meetingId,
+                meetingTitle = meetingTitle,
+                audioFile = file,
+                chunkIndex = index,
+                timeOffsetMs = accumulatedTimeOffsetMs
+            )
 
             allSegments.addAll(chunkSegments)
-            // Offset for next 5-minute chunk
-            accumulatedTimeOffsetMs += 300_000L
+            // Offset for next chunk is based on actual chunk duration
+            accumulatedTimeOffsetMs += if (chunkDuration > 0L) chunkDuration else 300_000L
         }
 
         if (allSegments.isEmpty()) {
-            throw TranscriptionException("Model transkripsi tidak menghasilkan teks dari rekaman suara.")
+            throw TranscriptionException("Model transkripsi tidak menghasilkan segmen teks dari rekaman suara.")
         }
 
         return@withContext allSegments
@@ -178,11 +174,15 @@ class GeminiAiManager(private val context: Context) {
             Log.d(TAG, "Attempting document structuring with ${geminiProvider.providerName}")
             onProviderSelected(geminiProvider.providerName)
             return@withContext geminiProvider.organizeDocument(meetingTitle, verbatimTranscript)
+        } catch (e: CancellationException) {
+            throw e
         } catch (geminiError: Exception) {
             Log.w(TAG, "Primary provider (${geminiProvider.providerName}) failed: ${geminiError.localizedMessage}. Attempting Groq fallback...")
             try {
                 onProviderSelected(groqProvider.providerName)
                 return@withContext groqProvider.organizeDocument(meetingTitle, verbatimTranscript)
+            } catch (e: CancellationException) {
+                throw e
             } catch (groqError: Exception) {
                 Log.e(TAG, "Both Gemini and Groq providers failed", groqError)
                 throw groqError
@@ -211,6 +211,8 @@ class GeminiAiManager(private val context: Context) {
 
         try {
             geminiProvider.organizeDocument("Instruksi Kustom", prompt)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             groqProvider.organizeDocument("Instruksi Kustom", prompt)
         }
@@ -225,6 +227,7 @@ class GeminiAiManager(private val context: Context) {
         val chunkSize = 20
         val windows = paragraphs.chunked(chunkSize)
         val organizedSections = mutableListOf<String>()
+        val usedProviders = mutableSetOf<String>()
 
         Log.i(TAG, "Processing long transcript in ${windows.size} sequential windows...")
 
@@ -233,13 +236,33 @@ class GeminiAiManager(private val context: Context) {
             val sectionTitle = "$meetingTitle (Bagian ${idx + 1} dari ${windows.size})"
 
             val sectionResult = try {
-                geminiProvider.organizeDocument(sectionTitle, windowText)
+                val res = geminiProvider.organizeDocument(sectionTitle, windowText)
+                usedProviders.add(geminiProvider.providerName)
+                res
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Gemini failed on window $idx, trying Groq fallback", e)
-                groqProvider.organizeDocument(sectionTitle, windowText)
+                try {
+                    val res = groqProvider.organizeDocument(sectionTitle, windowText)
+                    usedProviders.add(groqProvider.providerName)
+                    res
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (ge: Exception) {
+                    throw ge
+                }
             }
             organizedSections.add(sectionResult)
         }
+
+        val finalProviderName = when {
+            usedProviders.contains(geminiProvider.providerName) && usedProviders.contains(groqProvider.providerName) ->
+                "${geminiProvider.providerName} & ${groqProvider.providerName} (Failover)"
+            usedProviders.contains(groqProvider.providerName) -> groqProvider.providerName
+            else -> geminiProvider.providerName
+        }
+        onProviderSelected(finalProviderName)
 
         return mergeOrganizedSections(meetingTitle, organizedSections)
     }
@@ -257,7 +280,7 @@ class GeminiAiManager(private val context: Context) {
         return sb.toString().trim()
     }
 
-    private fun parseSegmentsFromJson(
+    fun parseSegmentsFromJson(
         meetingId: String,
         rawText: String,
         timeOffsetMs: Long
@@ -273,69 +296,44 @@ class GeminiAiManager(private val context: Context) {
 
             for (i in 0 until array.length()) {
                 val item = array.getJSONObject(i)
-                val relStart = item.optLong("startTimeMs", (i * 6000).toLong())
-                val relEnd = item.optLong("endTimeMs", relStart + 5500)
-                val speaker = item.optString("speaker", "Pembicara ${i % 2 + 1}")
-                val text = item.optString("text", "")
-                if (text.isNotBlank()) {
-                    list.add(
-                        TranscriptSegmentEntity(
-                            id = UUID.randomUUID().toString(),
-                            meetingId = meetingId,
-                            startTimeMs = timeOffsetMs + relStart,
-                            endTimeMs = timeOffsetMs + relEnd,
-                            speaker = speaker,
-                            text = text
-                        )
-                    )
+                val text = item.optString("text", "").trim()
+                if (text.isBlank()) continue
+
+                // Strictly validate timestamps: must exist and be >= 0
+                if (!item.has("startTimeMs")) {
+                    Log.w(TAG, "Skipping segment $i: missing startTimeMs")
+                    continue
                 }
+                val relStart = item.optLong("startTimeMs", -1L)
+                if (relStart < 0L) {
+                    Log.w(TAG, "Skipping segment $i: invalid negative startTimeMs ($relStart)")
+                    continue
+                }
+
+                val relEnd = if (item.has("endTimeMs")) {
+                    val endVal = item.optLong("endTimeMs", -1L)
+                    if (endVal >= relStart) endVal else relStart
+                } else {
+                    relStart
+                }
+
+                val rawSpeaker = item.optString("speaker", "").trim()
+                val speaker = if (rawSpeaker.isNotEmpty()) rawSpeaker else "Pembicara"
+
+                list.add(
+                    TranscriptSegmentEntity(
+                        id = UUID.randomUUID().toString(),
+                        meetingId = meetingId,
+                        startTimeMs = timeOffsetMs + relStart,
+                        endTimeMs = timeOffsetMs + relEnd,
+                        speaker = speaker,
+                        text = text
+                    )
+                )
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to parse JSON transcript segments", e)
         }
         return list
-    }
-
-    private fun isSimulatedPreviewFile(file: File): Boolean {
-        return try {
-            if (file.length() <= 4096 + 32) {
-                val header = file.inputStream().use { stream ->
-                    val buf = ByteArray(32)
-                    val read = stream.read(buf)
-                    if (read > 0) String(buf, 0, read, Charsets.UTF_8) else ""
-                }
-                header.startsWith("GuzNotaraAudioTrack")
-            } else {
-                false
-            }
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    private fun generateSimulatedSegments(
-        meetingId: String,
-        title: String,
-        chunkIndex: Int,
-        timeOffsetMs: Long
-    ): List<TranscriptSegmentEntity> {
-        val sampleUtterances = listOf(
-            Pair("Pembicara 1", "Halo semuanya, selamat datang di sesi diskusi '$title'. Rekaman audio nyata aktif di perangkat."),
-            Pair("Pembicara 2", "Pagi mas, untuk topik pembahasan hari ini kita akan fokus pada sinkronisasi audio dan pembersihan storage otomatis."),
-            Pair("Pembicara 1", "Betul, setelah transkrip verbatim ini tersimpan di Room database, file audio sementara akan otomatis dibersihkan."),
-            Pair("Pembicara 3", "Luar biasa, dengan begitu memori perangkat pengguna tidak akan membengkak meski merekam rapat berjam-jam.")
-        )
-
-        return sampleUtterances.mapIndexed { idx, pair ->
-            val start = timeOffsetMs + (idx * 6000L)
-            TranscriptSegmentEntity(
-                id = UUID.randomUUID().toString(),
-                meetingId = meetingId,
-                startTimeMs = start,
-                endTimeMs = start + 5500L,
-                speaker = pair.first,
-                text = pair.second
-            )
-        }
     }
 }

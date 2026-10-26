@@ -51,6 +51,93 @@ object AudioCleanupHelper {
     }
 
     /**
+     * Data class representing recorded chunk information.
+     */
+    data class ChunkInfo(
+        val chunkIndex: Int,
+        val fileName: String,
+        val durationMs: Long
+    )
+
+    /**
+     * Saves chunk duration to manifest.json in the temporary meeting audio directory.
+     */
+    fun saveChunkMetadata(context: Context, meetingId: String, chunkIndex: Int, fileName: String, durationMs: Long) {
+        try {
+            val dir = getTempAudioDir(context, meetingId)
+            val manifestFile = File(dir, "manifest.json")
+            val array = if (manifestFile.exists()) {
+                try {
+                    org.json.JSONArray(manifestFile.readText())
+                } catch (_: Exception) {
+                    org.json.JSONArray()
+                }
+            } else {
+                org.json.JSONArray()
+            }
+
+            var found = false
+            for (i in 0 until array.length()) {
+                val obj = array.getJSONObject(i)
+                if (obj.optInt("chunkIndex") == chunkIndex) {
+                    obj.put("fileName", fileName)
+                    obj.put("durationMs", durationMs)
+                    found = true
+                    break
+                }
+            }
+            if (!found) {
+                val obj = org.json.JSONObject().apply {
+                    put("chunkIndex", chunkIndex)
+                    put("fileName", fileName)
+                    put("durationMs", durationMs)
+                }
+                array.put(obj)
+            }
+            manifestFile.writeText(array.toString())
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save chunk metadata", e)
+        }
+    }
+
+    /**
+     * Resolves the actual duration of a chunk file in milliseconds.
+     * Prioritizes manifest.json, falls back to MediaMetadataRetriever, and finally bitrate estimation.
+     */
+    fun getChunkDurationMs(context: Context, meetingId: String, chunkIndex: Int, audioFile: File): Long {
+        try {
+            val dir = getTempAudioDir(context, meetingId)
+            val manifestFile = File(dir, "manifest.json")
+            if (manifestFile.exists()) {
+                val array = org.json.JSONArray(manifestFile.readText())
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    if (obj.optInt("chunkIndex") == chunkIndex) {
+                        val dur = obj.optLong("durationMs", 0L)
+                        if (dur > 0) return dur
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error reading manifest for duration", e)
+        }
+
+        // Fallback: MediaMetadataRetriever
+        try {
+            val retriever = android.media.MediaMetadataRetriever()
+            retriever.setDataSource(audioFile.absolutePath)
+            val durationStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
+            retriever.release()
+            val parsed = durationStr?.toLongOrNull()
+            if (parsed != null && parsed > 0L) return parsed
+        } catch (_: Exception) {}
+
+        // Fallback: Bitrate estimation for AAC 128kbps (~16KB/s)
+        val bytes = audioFile.length()
+        return if (bytes > 0) (bytes * 1000L) / 16000L else 0L
+    }
+
+    /**
      * Returns total audio size in bytes for a meeting.
      */
     fun getTotalAudioSizeBytes(context: Context, meetingId: String): Long {

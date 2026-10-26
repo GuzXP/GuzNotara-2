@@ -72,9 +72,11 @@ class MeetingRepository(private val context: Context) {
     suspend fun saveSegments(
         segments: List<TranscriptSegmentEntity>
     ) = withContext(Dispatchers.IO) {
+        val meetingId = segments.firstOrNull()?.meetingId ?: return@withContext
+        // Prevent duplicate segments on retry: clear prior segments for this meeting first
+        transcriptDao.deleteSegmentsForMeeting(meetingId)
         transcriptDao.insertSegments(segments)
         // Also update or create the document verbatim representation
-        val meetingId = segments.firstOrNull()?.meetingId ?: return@withContext
         val allMeetingSegments = transcriptDao.getSegmentsForMeetingSync(meetingId)
         val verbatimText = buildVerbatimText(allMeetingSegments)
 

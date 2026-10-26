@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
@@ -76,6 +77,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         .map { it.id }
                         .toSet()
                     AudioCleanupHelper.cleanupStaleAudio(getApplication(), activeIds)
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            AudioRecordingService.recordingStatus.collect { status ->
+                if (status == RecordingStatus.ERROR) {
+                    val activeId = AudioRecordingService.finalizedMeetingId.value ?: _selectedMeetingId.value
+                    val err = AudioRecordingService.recordingErrorMessage.value ?: "Perekam suara gagal diinisialisasi."
+                    if (activeId != null) {
+                        repository.updateMeetingError(activeId, "ERROR", err)
+                    }
+                    _errorMessage.value = err
                 }
             }
         }
@@ -160,8 +174,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         context.startService(intent)
 
         viewModelScope.launch {
+            // Await confirmation that the recorder has stopped and the final chunk is finalized
+            AudioRecordingService.recordingStatus.first {
+                it == RecordingStatus.STOPPED || it == RecordingStatus.IDLE || it == RecordingStatus.ERROR
+            }
+
+            if (AudioRecordingService.recordingStatus.value == RecordingStatus.ERROR) {
+                val err = AudioRecordingService.recordingErrorMessage.value ?: "Perekaman gagal."
+                repository.updateMeetingError(meetingId, "ERROR", err)
+                _errorMessage.value = err
+                return@launch
+            }
+
             repository.updateMeetingStatus(meetingId, "RECORDED", finalDuration)
-            // Automatically launch transcription
+            // Automatically launch transcription with finalized audio
             processTranscription(meetingId)
             onComplete(meetingId)
         }

@@ -32,7 +32,8 @@ enum class RecordingStatus {
     IDLE,
     RECORDING,
     PAUSED,
-    STOPPED
+    STOPPED,
+    ERROR
 }
 
 class AudioRecordingService : Service() {
@@ -43,6 +44,7 @@ class AudioRecordingService : Service() {
     private var currentTitle: String = ""
     private var currentChunkIndex: Int = 0
     private var currentChunkFile: File? = null
+    private var currentChunkStartTimeMs: Long = 0L
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
     private var timerJob: Job? = null
@@ -51,7 +53,6 @@ class AudioRecordingService : Service() {
     private var startTimeMs: Long = 0L
     private var pausedDurationMs: Long = 0L
     private var pauseTimestampMs: Long = 0L
-    private var isHardwareAvailable: Boolean = false
 
     companion object {
         private const val TAG = "AudioRecordingService"
@@ -72,6 +73,12 @@ class AudioRecordingService : Service() {
 
         private val _recordingStatus = MutableStateFlow(RecordingStatus.IDLE)
         val recordingStatus: StateFlow<RecordingStatus> = _recordingStatus.asStateFlow()
+
+        private val _recordingErrorMessage = MutableStateFlow<String?>(null)
+        val recordingErrorMessage: StateFlow<String?> = _recordingErrorMessage.asStateFlow()
+
+        private val _finalizedMeetingId = MutableStateFlow<String?>(null)
+        val finalizedMeetingId: StateFlow<String?> = _finalizedMeetingId.asStateFlow()
 
         private val _elapsedTimeMs = MutableStateFlow(0L)
         val elapsedTimeMs: StateFlow<Long> = _elapsedTimeMs.asStateFlow()
@@ -115,7 +122,10 @@ class AudioRecordingService : Service() {
         currentTitle = title
         currentChunkIndex = 0
         _activeMeetingId.value = meetingId
+        _recordingErrorMessage.value = null
+        _finalizedMeetingId.value = null
         startTimeMs = System.currentTimeMillis()
+        currentChunkStartTimeMs = startTimeMs
         pausedDurationMs = 0L
         _elapsedTimeMs.value = 0L
 
@@ -123,7 +133,16 @@ class AudioRecordingService : Service() {
         val tempDir = AudioCleanupHelper.getTempAudioDir(this, meetingId)
         currentChunkFile = File(tempDir, String.format("chunk_%03d.m4a", currentChunkIndex))
 
-        isHardwareAvailable = initializeRecorder(currentChunkFile)
+        val initialized = initializeRecorder(currentChunkFile)
+        if (!initialized) {
+            Log.e(TAG, "Hardware mic recording failed to initialize on chunk 0 for meeting $meetingId")
+            _recordingStatus.value = RecordingStatus.ERROR
+            _recordingErrorMessage.value = "Mikrofon tidak dapat diakses atau perekam suara gagal diinisialisasi."
+            _activeMeetingId.value = null
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return
+        }
 
         _recordingStatus.value = RecordingStatus.RECORDING
 
@@ -172,28 +191,48 @@ class AudioRecordingService : Service() {
             Log.d(TAG, "MediaRecorder chunk started: ${targetFile.name}")
             return true
         } catch (e: Exception) {
-            Log.w(TAG, "Hardware mic recording unavailable, initializing stream simulation", e)
+            Log.e(TAG, "Hardware mic recording failed to initialize on file: ${targetFile.name}", e)
             mediaRecorder = null
-            createSimulatedAudioFile(targetFile)
+            // CRITICAL: NEVER generate simulated audio during normal recording.
             return false
         }
     }
 
     private fun rollNextChunk() {
         if (_recordingStatus.value != RecordingStatus.RECORDING) return
+        val chunkDuration = System.currentTimeMillis() - currentChunkStartTimeMs
         try {
             mediaRecorder?.stop()
-            mediaRecorder?.release()
         } catch (e: Exception) {
-            Log.w(TAG, "Exception finalizing chunk before roll", e)
+            Log.w(TAG, "Exception stopping chunk $currentChunkIndex", e)
+        } finally {
+            try {
+                mediaRecorder?.release()
+            } catch (e: Exception) {
+                Log.e(TAG, "MediaRecorder release error", e)
+            }
+            mediaRecorder = null
         }
-        mediaRecorder = null
+
+        // Save metadata for the completed chunk
+        currentChunkFile?.let { file ->
+            AudioCleanupHelper.saveChunkMetadata(this, currentMeetingId, currentChunkIndex, file.name, chunkDuration)
+        }
 
         currentChunkIndex++
+        currentChunkStartTimeMs = System.currentTimeMillis()
         val tempDir = AudioCleanupHelper.getTempAudioDir(this, currentMeetingId)
         currentChunkFile = File(tempDir, String.format("chunk_%03d.m4a", currentChunkIndex))
 
-        isHardwareAvailable = initializeRecorder(currentChunkFile)
+        val nextInitialized = initializeRecorder(currentChunkFile)
+        if (!nextInitialized) {
+            Log.e(TAG, "Failed to initialize rolling chunk $currentChunkIndex. Preserving previous chunks and stopping.")
+            _recordingStatus.value = RecordingStatus.ERROR
+            _recordingErrorMessage.value = "Perekaman terhenti pada bagian ${currentChunkIndex + 1} karena kegagalan alokasi audio baru. Rekaman sebelumnya tetap tersimpan utuh."
+            _finalizedMeetingId.value = currentMeetingId
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     private fun startTimerAndAmplitudeTracker() {
@@ -209,21 +248,18 @@ class AudioRecordingService : Service() {
         }
 
         amplitudeJob = serviceScope.launch {
-            var simStep = 0f
             while (isActive && _recordingStatus.value == RecordingStatus.RECORDING) {
                 delay(100)
-                if (isHardwareAvailable && mediaRecorder != null) {
+                if (mediaRecorder != null) {
                     try {
                         val maxAmp = mediaRecorder?.maxAmplitude ?: 0
                         val normalized = (maxAmp / 32767f).coerceIn(0f, 1f)
                         _currentAmplitude.value = normalized
                     } catch (e: Exception) {
-                        _currentAmplitude.value = 0.2f
+                        _currentAmplitude.value = 0.05f
                     }
                 } else {
-                    simStep += 0.3f
-                    val wave = (Math.sin(simStep.toDouble()).toFloat() * 0.4f + 0.45f).coerceIn(0.05f, 0.95f)
-                    _currentAmplitude.value = wave
+                    _currentAmplitude.value = 0.05f
                 }
             }
         }
@@ -233,7 +269,7 @@ class AudioRecordingService : Service() {
         if (_recordingStatus.value != RecordingStatus.RECORDING) return
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isHardwareAvailable) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 mediaRecorder?.pause()
             }
         } catch (e: Exception) {
@@ -248,7 +284,7 @@ class AudioRecordingService : Service() {
         if (_recordingStatus.value != RecordingStatus.PAUSED) return
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isHardwareAvailable) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 mediaRecorder?.resume()
             }
         } catch (e: Exception) {
@@ -264,6 +300,7 @@ class AudioRecordingService : Service() {
         timerJob?.cancel()
         amplitudeJob?.cancel()
 
+        val chunkDuration = System.currentTimeMillis() - currentChunkStartTimeMs
         try {
             mediaRecorder?.stop()
         } catch (e: Exception) {
@@ -277,27 +314,22 @@ class AudioRecordingService : Service() {
             mediaRecorder = null
         }
 
+        // Save metadata for the final chunk
+        currentChunkFile?.let { file ->
+            if (file.exists() && file.length() > 0) {
+                AudioCleanupHelper.saveChunkMetadata(this, currentMeetingId, currentChunkIndex, file.name, chunkDuration)
+            }
+        }
+
         _recordingStatus.value = RecordingStatus.STOPPED
         _currentAmplitude.value = 0f
+        _finalizedMeetingId.value = currentMeetingId
         _activeMeetingId.value = null
 
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
 
         return AudioCleanupHelper.getAudioFilesForMeeting(this, currentMeetingId)
-    }
-
-    private fun createSimulatedAudioFile(file: File?) {
-        if (file == null) return
-        try {
-            FileOutputStream(file).use { fos ->
-                fos.write("GuzNotaraAudioTrack\n".toByteArray(Charsets.UTF_8))
-                val filler = ByteArray(4096)
-                fos.write(filler)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to write simulated audio file", e)
-        }
     }
 
     private fun createNotificationChannel() {

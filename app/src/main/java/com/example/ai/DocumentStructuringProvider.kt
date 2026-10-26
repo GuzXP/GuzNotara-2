@@ -23,6 +23,12 @@ import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
 
 sealed class ProviderException(message: String, cause: Throwable? = null) : Exception(message, cause)
+class QuotaExceededException(val provider: String, message: String) : ProviderException(message)
+class TimeoutException(val provider: String, message: String) : ProviderException(message)
+class NetworkException(val provider: String, message: String, cause: Throwable? = null) : ProviderException(message, cause)
+class AuthenticationException(val provider: String, message: String) : ProviderException(message)
+class ConfigurationException(val provider: String, message: String) : ProviderException(message)
+class MalformedResponseException(val provider: String, message: String) : ProviderException(message)
 class TransientProviderException(val provider: String, val statusCode: Int, message: String) : ProviderException(message)
 class AuthProviderException(val provider: String, message: String) : ProviderException(message)
 
@@ -58,6 +64,8 @@ class GeminiDocumentProvider : DocumentStructuringProvider {
             val responseText = withTimeout(60_000L) {
                 try {
                     thinkingModel.generateContent(prompt).text
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     Log.w("GeminiDocProvider", "Gemini 4 Argon failed, trying gemini-3.8-flash", e)
                     flashModel.generateContent(prompt).text
@@ -67,16 +75,21 @@ class GeminiDocumentProvider : DocumentStructuringProvider {
             if (!responseText.isNullOrBlank()) {
                 return@withContext responseText.trim()
             } else {
-                throw TransientProviderException(providerName, 204, "Gemini returned empty document content.")
+                throw MalformedResponseException(providerName, "Gemini returned empty document content.")
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Rethrow cancellation immediately without translating or triggering fallback
+            throw e
         } catch (e: TimeoutCancellationException) {
-            throw TransientProviderException(providerName, 408, "Gemini document structuring timed out after 60s.")
+            throw TimeoutException(providerName, "Gemini document structuring timed out after 60s.")
         } catch (e: Exception) {
             val msg = e.localizedMessage.orEmpty()
             if (msg.contains("429") || msg.contains("RESOURCE_EXHAUSTED") || msg.contains("Quota")) {
-                throw TransientProviderException(providerName, 429, "Gemini quota/rate limit reached: $msg")
-            } else if (msg.contains("403") || msg.contains("PERMISSION_DENIED")) {
-                throw AuthProviderException(providerName, "Gemini App Check attestation / permission error: $msg")
+                throw QuotaExceededException(providerName, "Gemini quota/rate limit reached: $msg")
+            } else if (msg.contains("401") || msg.contains("403") || msg.contains("PERMISSION_DENIED")) {
+                throw AuthenticationException(providerName, "Gemini App Check attestation / permission error: $msg")
+            } else if (e is IOException || e is SocketTimeoutException) {
+                throw NetworkException(providerName, "Gemini network failure: $msg", e)
             }
             throw TransientProviderException(providerName, 500, "Gemini failed: $msg")
         }
@@ -127,7 +140,7 @@ class GroqDocumentProvider(private val context: Context) : DocumentStructuringPr
     override suspend fun organizeDocument(meetingTitle: String, verbatimTranscript: String): String = withContext(Dispatchers.IO) {
         val apiKey = getApiKey()
         if (apiKey.isBlank() || apiKey == "GROQ_API_KEY_PLACEHOLDER") {
-            throw AuthProviderException(
+            throw ConfigurationException(
                 providerName,
                 "API Key Groq belum dikonfigurasi. Masukkan kunci di pengaturan atau Secrets panel."
             )
@@ -172,8 +185,8 @@ class GroqDocumentProvider(private val context: Context) : DocumentStructuringPr
 
             if (!response.isSuccessful) {
                 when (response.code) {
-                    401, 403 -> throw AuthProviderException(providerName, "Groq API Key tidak valid (HTTP ${response.code}).")
-                    429 -> throw TransientProviderException(providerName, 429, "Groq rate limit exceeded (HTTP 429).")
+                    401, 403 -> throw AuthenticationException(providerName, "Groq API Key tidak valid (HTTP ${response.code}).")
+                    429 -> throw QuotaExceededException(providerName, "Groq rate limit exceeded (HTTP 429).")
                     500, 502, 503, 504 -> throw TransientProviderException(providerName, response.code, "Groq service error (HTTP ${response.code}).")
                     else -> throw TransientProviderException(providerName, response.code, "Groq HTTP ${response.code}: $responseBody")
                 }
@@ -188,11 +201,15 @@ class GroqDocumentProvider(private val context: Context) : DocumentStructuringPr
                     return@withContext content.trim()
                 }
             }
-            throw TransientProviderException(providerName, 204, "Groq returned empty document content.")
+            throw MalformedResponseException(providerName, "Groq returned empty document content.")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: ProviderException) {
+            throw e
         } catch (e: SocketTimeoutException) {
-            throw TransientProviderException(providerName, 408, "Groq request timed out.")
+            throw TimeoutException(providerName, "Groq request timed out.")
         } catch (e: IOException) {
-            throw TransientProviderException(providerName, 0, "Groq network error: ${e.localizedMessage}")
+            throw NetworkException(providerName, "Groq network error: ${e.localizedMessage}", e)
         }
     }
 }
