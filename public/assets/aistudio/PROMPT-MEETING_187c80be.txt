@@ -1,0 +1,592 @@
+MASTER PROJECT BRIEF — NATIVE ANDROID AI MEETING TRANSCRIPTION & DOCUMENT WORKSPACE
+
+1. Your Role and Mission
+
+Act as a senior Android engineer, software architect, AI integration engineer, product designer, QA engineer, and technical project lead.
+
+I am an IT student and beginner in AI-assisted development. My initial description may not contain every technical detail, so you are responsible for identifying missing requirements, evaluating trade-offs, making sound engineering decisions, and proactively improving the solution without changing the product's core purpose.
+
+Build a genuinely functional, polished native Android application inspired by Meeting.ai, Uniscribe, and TurboScribe.
+
+This is not merely a UI prototype. The goal is to explore the full capabilities of Google AI Studio's Android development environment while producing a maintainable, testable, and practically useful application.
+
+Do not ask me to make routine technical decisions that you can reasonably make yourself. Research, inspect, plan, implement, test, and iterate autonomously wherever the environment permits.
+
+2. Product Vision
+
+Build an Android meeting recorder and transcription workspace that captures spoken conversations, converts them into timestamped text, and uses AI to organize the complete transcript into a readable, professionally structured document.
+
+The defining requirement: this application must NOT reduce a meeting to a summary.
+
+It must preserve the conversation's substantive content, including:
+
+- Introductions and small talk.
+- Questions and answers.
+- Repetitions and informal language.
+- Clarifications, interruptions, and changes of topic.
+- Disagreements, explanations, and incomplete thoughts.
+- Relevant conversational context, even when it is not directly related to the meeting agenda.
+
+The AI may improve punctuation, paragraph structure, readability, and document organization. It must not silently remove substantive information, invent statements, or turn uncertain speech into fabricated facts.
+
+The original transcript must remain recoverable even when AI processing fails or produces an unsatisfactory result.
+
+3. Mandatory Discovery Before Implementation
+
+Before modifying or generating substantial application code:
+
+1. Inspect the current project, available files, Android development environment, supported tools, existing dependencies, and applicable platform limitations.
+2. Read the official Google AI Studio Android documentation and relevant Android documentation for microphone recording, foreground services, storage, and background execution.
+3. Evaluate available speech-to-text and Gemini integration options using current documentation. Verify actual model identifiers, capabilities, supported inputs, authentication requirements, quotas, and limitations.
+4. Inspect the Taste Skill repository and its relevant SKILL.md instructions.
+5. Produce a concise but substantive architecture assessment, requirements document, implementation plan, and test strategy.
+6. Identify any capabilities that cannot be verified or implemented within the environment.
+
+Do not assume that a feature exists simply because it is technically possible in a general Android project.
+
+Taste Skill installation
+
+Attempt the following command if the environment provides a compatible terminal and network access:
+
+"npx skills add Leonxlnx/taste-skill"
+
+Verify that installation succeeds and inspect the resulting skill files. If the environment cannot install or automatically load the skill, explain the limitation and use the accessible SKILL.md instructions directly when possible.
+
+Treat Taste Skill as a design-quality reference, not as a replacement for Android engineering standards. Adapt applicable principles to native Android and Jetpack Compose.
+
+Do not claim that a skill, dependency, test, or tool was installed or executed unless it actually was.
+
+Required project artifacts
+
+Create and maintain appropriate Markdown documents within the project, adapting their location to the existing project structure:
+
+- "PROJECT_BRIEF.md" — product goals, scope, constraints, and acceptance criteria.
+- "ARCHITECTURE.md" — system components, responsibilities, dependencies, and data flows.
+- "IMPLEMENTATION_PLAN.md" — ordered milestones and current progress.
+- "TECHNICAL_DECISIONS.md" — important decisions, alternatives, and reasons.
+- "TEST_PLAN.md" — functional, integration, failure-recovery, and device tests.
+- "DESIGN_SYSTEM.md" — visual direction, typography, spacing, color, component behavior, and accessibility.
+- "KNOWN_LIMITATIONS.md" — unresolved issues, unsupported features, and verified limitations.
+
+Keep these documents concise enough to remain useful. Update them when implementation reveals new constraints. Do not create redundant documentation solely to appear professional.
+
+After this initial discovery, proceed with implementation rather than stopping at a plan, unless a genuine blocker requires my input.
+
+4. Platform and Architecture
+
+Build a native Android application using the supported Google AI Studio Android environment.
+
+Preferred technologies:
+
+- Kotlin.
+- Jetpack Compose and Material 3.
+- A single Activity and a single supported Android module.
+- ViewModel and lifecycle-aware state management.
+- Kotlin coroutines and Flow where appropriate.
+- Room for structured local data.
+- Android-supported file storage and document export.
+- Foreground Service for active microphone recording.
+- WorkManager for appropriate deferrable background tasks, such as retrying eligible processing jobs.
+
+Use compatible, maintained dependencies and verify versions against the environment before adding them.
+
+Keep responsibilities separated even if the platform requires a single module. Organize code into appropriate packages for presentation, domain logic, data access, recording, transcription, AI processing, and export.
+
+Avoid unnecessary abstraction, excessive dependencies, and premature enterprise architecture. However, do not put recording logic, database operations, networking, and document processing directly into composable UI functions.
+
+The UI must remain responsive while recording, saving, or processing transcripts.
+
+5. Core Architectural Principle: Local-First and Failure-Resilient
+
+The recording pipeline must not depend on the AI pipeline succeeding.
+
+Use this conceptual architecture:
+
+Audio Capture → Local Audio Persistence → Transcription Jobs → Raw Transcript → AI Document Processing → Exportable Document.
+
+Implement the details according to platform constraints.
+
+Audio persistence
+
+- Write recorded audio incrementally to local files.
+- Never accumulate an entire long recording in RAM.
+- Persist recording metadata and processing state.
+- Use stable recording and segment identifiers.
+- Maintain start and end timestamps where available.
+- Track processing status and failures.
+- Recover unfinished work after process termination or application restart where feasible.
+- Avoid corrupting or overwriting existing audio when pausing, resuming, or recovering.
+- Check available storage and report insufficient space clearly.
+- Allow users to delete audio and documents independently, with explicit confirmation where appropriate.
+
+Do not delete original audio automatically after transcription. The default is to retain it until the user explicitly deletes it.
+
+Do not promise perfect recovery from every possible device failure. Design for recoverability and document the remaining limitations.
+
+Background recording
+
+Implement the appropriate Android microphone foreground service and notification behavior.
+
+Handle permissions, lifecycle transitions, service startup restrictions, and Android-version differences correctly.
+
+The intended user flow is:
+
+1. User opens the application.
+2. User grants the necessary microphone permission.
+3. User explicitly starts recording.
+4. Recording continues while the screen is off or another application is in the foreground, subject to Android restrictions.
+5. The user can pause, resume, or stop through the application.
+6. Provide appropriate notification controls if supported and reliable.
+7. Persist recording state and recover gracefully after interruptions.
+
+Never bypass Android privacy controls or attempt hidden recording.
+
+Do not confuse persistent background recording with WorkManager jobs. Choose the correct mechanism for each responsibility.
+
+6. Speech-to-Text Strategy
+
+Use a hybrid, local-first architecture.
+
+The default objective is high-quality cloud transcription with local audio persistence and a recoverable processing queue.
+
+First, evaluate available options:
+
+- Gemini transcription capabilities supported by the current environment.
+- Android SpeechRecognizer as a potential alternative or fallback.
+- Local transcription engines only if their integration, resource requirements, and performance are realistic.
+
+Prefer a verified transcription capability that supports verbatim output, timestamps, and speaker information when available.
+
+Do not assume that every model supports word-level timestamps, speaker diarization, incremental streaming, or long recordings. Verify each capability independently.
+
+Incremental transcription
+
+Design the system to process audio in manageable segments when supported.
+
+Each segment should have:
+
+- A stable identifier.
+- Its recording identifier.
+- Start and end time.
+- Processing status.
+- Transcript content when available.
+- Error information when processing fails.
+
+Prevent duplicate segments, overlapping timestamps, and accidental loss during retries.
+
+If the chosen provider cannot perform genuine live streaming, implement a truthful alternative such as periodic chunk processing or post-recording transcription.
+
+Do not simulate real-time transcription by displaying fabricated or prerecorded text.
+
+Indonesian-language quality
+
+Use Bahasa Indonesia as the primary language and mixed Indonesian-English conversation as a major test case.
+
+Support language selection or automatic detection only where the chosen engine actually supports it.
+
+Preserve technical terminology, names, abbreviations, and English phrases as accurately as possible. Provide a way to correct transcription mistakes.
+
+When speech is unintelligible, mark it appropriately rather than inventing a sentence.
+
+Authentication and privacy
+
+Google AI Studio Android projects are client-side applications. Inspect the supported Firebase AI Logic and App Check integration paths where appropriate.
+
+Never hardcode a private server API key, secret credential, or unrestricted privileged token into the APK.
+
+Use an officially supported secure client integration where available. If a feature requires a backend that the environment cannot provide, document the constraint and implement the best secure, supported alternative.
+
+Do not transmit audio to a cloud service without clearly explaining that behavior to the user.
+
+7. Transcript and Document Data Model
+
+Treat the raw transcript, readable transcript, and AI-organized document as separate representations.
+
+A. Raw transcript
+
+Preserve the closest available output from the speech recognition engine, together with source segment references, timestamps, speaker labels, and confidence metadata when provided.
+
+Never pretend that raw speech-recognition output is a perfect verbatim record. Recognition engines can omit or misrecognize words.
+
+Do not overwrite the raw transcript when correcting or formatting the text.
+
+B. Readable transcript
+
+Allow punctuation correction, paragraph restructuring, and limited readability improvements while preserving substantive information.
+
+The user should be able to choose between:
+
+- Verbatim: preserve filler words, repetitions, informal expressions, and incomplete speech as accurately as possible.
+- Readable: improve readability without removing substantive statements or changing meaning.
+
+Retain references to original segments and timestamps wherever possible.
+
+C. AI-organized meeting document
+
+Allow the AI to organize the complete transcript into a professional document using headings, paragraphs, topic sections, and speaker labels.
+
+Potential sections include:
+
+- Meeting information.
+- Opening and introductions.
+- Discussion sections.
+- Questions and responses.
+- Clarifications and disagreements.
+- Closing conversation.
+
+Use sections only when appropriate. Do not force every conversation into a rigid template.
+
+Preserve small talk and other conversational content. Do not silently discard it because it appears unimportant.
+
+The document must remain complete, not merely a list of key takeaways.
+
+AI integrity requirements
+
+- Never fabricate facts, quotes, decisions, attendees, or timestamps.
+- Never claim a decision was agreed upon when participants only discussed it.
+- Do not create action items unless they are supported by the transcript.
+- Preserve uncertainty and ambiguity.
+- Avoid unnecessary paraphrasing.
+- Maintain traceability between organized paragraphs and their source transcript segments.
+- Validate AI output before saving it.
+- Keep the original transcript recoverable after every AI operation.
+
+Use structured model output where supported, with explicit source references and validation. If a generated document cannot be validated, retain the original and report the problem rather than silently replacing it.
+
+8. AI Document Editing
+
+Provide a document editor where users can:
+
+- Review the full organized transcript.
+- Edit text manually.
+- Rename speakers.
+- Correct transcription errors.
+- Reprocess selected content.
+- Change document organization or writing style using custom instructions.
+- Restore the previous version when feasible.
+- Compare generated content with its source transcript.
+
+Custom instructions must not override the core data-integrity rules.
+
+Avoid unnecessary model calls. Do not send the entire recording or transcript repeatedly when only a small section needs correction, unless required by the chosen model.
+
+Keep generated content distinguishable from original speech data.
+
+9. Main Application Screens
+
+Design a cohesive mobile experience with these primary screens.
+
+Home and recording library
+
+Show recent recordings, titles, dates, duration, and processing status.
+
+Include a clear primary action to start a new recording, search, and access existing documents.
+
+Handle empty, loading, failed, and populated states.
+
+Recording Studio
+
+This is the application's central experience.
+
+Include:
+
+- Recording timer.
+- Clear recording status.
+- Waveform or audio-level visualization based on actual audio data.
+- Start, pause, resume, and stop controls.
+- Incremental transcript when available.
+- Microphone and connection status.
+- Processing progress and recoverable error states.
+- Background-recording guidance.
+- A clear path to the resulting transcript.
+
+The recording interface must remain readable and easy to operate with minimal interaction.
+
+Transcript Workspace
+
+Include:
+
+- Timestamped transcript segments.
+- Speaker labels where available.
+- Search within the transcript.
+- Speaker renaming.
+- Text correction.
+- Navigation to relevant sections.
+- Retry and recovery controls for failed segments.
+- A clear distinction between raw and edited content.
+
+Document Editor
+
+Include:
+
+- Long-form document reading and editing.
+- Clear typography and section hierarchy.
+- Verbatim and readable modes.
+- Custom AI formatting instructions.
+- Source-aware corrections and regeneration.
+- Version history or safe undo where feasible.
+
+Recording Details and Export
+
+Allow users to review metadata, manage original audio, and export available documents.
+
+Support:
+
+- PDF.
+- Plain text (".txt").
+- Markdown (".md").
+- Android Sharesheet integration.
+- Appropriate filenames and document metadata.
+
+Use a real PDF generation method compatible with Android. Do not rename a text file to ".pdf" or present a preview as a successful export.
+
+Verify exported content, formatting, character encoding, and timestamps.
+
+10. Visual Design and Taste Skill
+
+The interface must look intentionally designed, not like a generic AI-generated dashboard.
+
+Use a professional audio-productivity identity: calm, editorial, precise, and focused on long-form reading.
+
+Develop a coherent design system with:
+
+- A deliberate typography scale.
+- Consistent spacing and component sizing.
+- A restrained, recognizable color palette.
+- Thoughtful light and dark themes.
+- Clear visual hierarchy.
+- Accessible contrast and touch targets.
+- Subtle, purposeful animations.
+- Meaningful loading, success, empty, and error states.
+- Responsive layouts for supported phone sizes.
+
+Use Taste Skill's applicable principles to challenge generic layouts, arbitrary gradients, excessive rounded cards, decorative glassmorphism, and meaningless animation.
+
+Do not copy another application's exact UI or rely on random decorative elements to create visual polish.
+
+The waveform, recording controls, transcript, and document typography should receive more design attention than decorative dashboards.
+
+Create reusable Compose components and theme tokens. Avoid inconsistent one-off styling.
+
+The UI must be functional, not just visually convincing. Every visible control must perform its stated action or be clearly identified as unavailable.
+
+11. Export and Storage Reliability
+
+Use a clear persistence strategy.
+
+Room should store structured metadata and transcript records. Audio should use suitable local file storage. Do not store large audio blobs in ordinary UI state or repeatedly load entire recordings into memory.
+
+Use appropriate Android file access and document-sharing mechanisms.
+
+The application must preserve data across ordinary navigation and process restarts.
+
+Implement reasonable transactional boundaries and recovery logic so that a failed export or AI operation does not corrupt the source document.
+
+Where necessary, use temporary files and atomic replacement to avoid leaving partially written final exports.
+
+12. Testing and Verification
+
+Create a test strategy before implementation and execute the available tests throughout development.
+
+At minimum, verify:
+
+Recording
+
+- Permission granted and denied.
+- Start, pause, resume, and stop.
+- Screen off and application backgrounded.
+- Navigation during recording.
+- Application restart.
+- Interrupted recording recovery.
+- Insufficient storage handling.
+
+Transcription
+
+- Indonesian speech.
+- Mixed Indonesian-English speech.
+- Multiple speakers.
+- Long recordings processed in segments.
+- Slow or unavailable network.
+- API or provider errors.
+- Duplicate retries.
+- Missing or uncertain speech.
+- Timestamp continuity.
+
+AI document processing
+
+- Complete content preservation.
+- Filler words and small talk retained.
+- No unsupported factual additions.
+- No fabricated decisions.
+- Source references remain valid.
+- Failed generation does not destroy the original.
+- Reprocessing and manual edits behave correctly.
+
+Export and persistence
+
+- PDF, TXT, and Markdown exports.
+- Indonesian characters and mixed-language text.
+- Long-document handling.
+- Correct timestamps and speaker labels.
+- Reopening saved recordings.
+- Deleting audio independently from documents.
+- Recovering unfinished processing jobs.
+
+UI and engineering
+
+- Main navigation and all principal controls.
+- Empty, loading, and error states.
+- Accessibility and text scaling.
+- Light and dark appearance.
+- Build and compilation checks.
+- Relevant unit and integration tests.
+
+Use real test results. Do not claim that device tests passed if only static code inspection was performed.
+
+If a test cannot run in the environment, explain what remains unverified and provide the most useful alternative verification.
+
+13. Scope Priorities
+
+Prioritize work in this order:
+
+P0 — Reliability foundation
+
+Native project structure.
+
+Local recording.
+
+Foreground recording service.
+
+Persistent recording metadata.
+
+Raw transcript model.
+
+Basic recovery and error handling.
+
+P1 — Functional product
+
+Transcription integration.
+
+Transcript workspace.
+
+AI document processing.
+
+Local library.
+
+PDF, TXT, and Markdown export.
+
+P2 — Product quality
+
+Speaker correction.
+
+Search.
+
+Versioning and undo.
+
+Improved long-document editing.
+
+Strong visual design and accessibility.
+
+Expanded recovery and regression tests.
+
+P3 — Optional future features
+
+Cloud synchronization.
+
+User accounts.
+
+Collaboration.
+
+Calendar integrations.
+
+Advanced analytics and optional summaries.
+
+Do not let optional features delay the core recording and transcription workflow.
+
+14. Working Method and Agent Responsibilities
+
+Work autonomously but in a disciplined sequence:
+
+Inspect and document the environment.
+
+Establish requirements and technical decisions.
+
+Create a working vertical slice.
+
+Build and test the recording-to-transcript flow.
+
+Add AI document processing.
+
+Implement export and document management.
+
+Refine the UI using the design system and Taste Skill.
+
+Run regression checks and resolve discovered issues.
+
+Update documentation and report the verified result.
+
+Use the tools actually available in Google AI Studio. Do not assume shell access, arbitrary dependency installation, unrestricted network access, backend runtimes, or device-level debugging capabilities.
+
+If the environment imposes a restriction, adapt the implementation while preserving the product's core purpose. Never disguise a mock implementation as a real feature.
+
+Prefer complete, working vertical slices over generating many disconnected screens.
+
+Do not stop after producing architecture documents or a beautiful static interface. Continue implementing the highest-priority functional scope that the environment supports.
+
+If you encounter a genuine blocker, explain:
+
+What failed.
+
+Why it matters.
+
+What you verified.
+
+Which alternatives are feasible.
+
+What decision, if any, is required from me.
+
+Do not interrupt progress for minor decisions that can be handled through reasonable engineering judgment.
+
+15. Definition of Done
+
+The project is not complete merely because the code compiles or the UI looks polished.
+
+The final result must demonstrate, to the extent supported by the environment:
+
+Native Android application structure.
+
+Actual microphone recording and local audio persistence.
+
+Appropriate background recording behavior.
+
+Recoverable transcription processing.
+
+Timestamped transcript data.
+
+Complete transcript preservation through AI formatting.
+
+Functional document editing.
+
+Real PDF, TXT, and Markdown exports.
+
+Persistent local recording history.
+
+Appropriate permissions, privacy controls, and credential handling.
+
+Meaningful tests and honest reporting of their results.
+
+A coherent, polished, accessible interface.
+
+Updated project documentation and known limitations.
+
+For every incomplete requirement, report its status explicitly: implemented and tested, implemented but not fully tested, partially implemented, blocked, or not implemented.
+
+Final Instruction
+
+Think and act like the technical owner of this project.
+
+Use professional judgment, inspect before assuming, challenge weak solutions, and optimize for correctness, usability, maintainability, and real-world functionality.
+
+The goal is not to produce the largest amount of code in one attempt. The goal is to use AI-assisted development as effectively as possible to build the strongest working application that the current environment can realistically support.
+
+Begin with discovery and architecture, then proceed into implementation and verification without waiting for me to repeat these instructions.

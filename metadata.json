@@ -1,0 +1,6 @@
+{
+  "name": "GuzNotara",
+  "description": "Native Android AI meeting transcription & document workspace preserving verbatim speech, speaker turns, and structured notes.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
